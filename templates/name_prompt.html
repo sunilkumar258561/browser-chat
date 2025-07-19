@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Welcome to Weconnect</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            font-family: Segoe UI, sans-serif;
+            color: #333131;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 0;
+            background-image: url('{{ url_for("static", filename="chat.png") }}');
+
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            width: 100%;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            /* white transparent */
+            color: #333131;
+            max-width: 320px;
+            width: 90%;
+            padding: 40px 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, .2);
+            box-sizing: border-box;
+        }
+
+        input[type=text] {
+            width: 100%;
+            padding: 12px;
+            margin-top: 8px;
+            border: 1px solid #252424;
+            border-radius: 10px;
+            font-size: 16px;
+            box-sizing: border-box;
+            position: relative;
+            top: 14px;
+        }
+
+        button {
+            margin-top: 30px;
+            padding: 12px;
+            border: none;
+            border-radius: 222px;
+            background: #3b7f4a;
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            max-width: 228px;
+            box-sizing: border-box;
+            transition: background-color 0.3s ease;
+            position: relative;
+            top: 18px;
+        }
+
+        button:hover {
+            background-color: #2e6539;
+        }
+
+        h2 {
+            font-size: 2rem;
+            color: crimson;
+            margin-bottom: 20px;
+            margin-top: 3px;
+        }
+
+
+        h4 {
+            margin: 0;
+            font-weight: normal;
+            color: #4db30f;
+            position: relative;
+            top: 17px;
+            margin-left: -104px;
+        }
+
+        /* Responsive tweaks for very small screens */
+        @media (max-width: 400px) {
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            button {
+                max-width: 100%;
+            }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+
+<body>
+    <div class="card">
+        <h2> Weconnect</h2>
+        <form id="nameForm">
+            <h4>Enter your username:</h4>
+            <input type="text" id="usernameInput" maxlength="20" placeholder="Your name" required autofocus />
+            <button type="submit">Join Chat</button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('nameForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('usernameInput').value.trim();
+            if (!name) return;
+            await fetch('/set_name', { method: 'POST', body: new URLSearchParams({ username: name }) });
+            location.reload(); // now the server will render the chat page
+        });
+    </script>
+</body>
+
+</html>
