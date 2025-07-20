@@ -10,8 +10,14 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
-socketio = SocketIO(app, async_mode='eventlet')
+socketio = SocketIO(
+    app,
+    async_mode='eventlet',
+    cors_allowed_origins="*",
+    logger=True,
+    engineio_logger=True
+)
+
 # Config logging
 logging.basicConfig(
     level=logging.INFO,
