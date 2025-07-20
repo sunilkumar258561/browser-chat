@@ -12,7 +12,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 app = Flask(__name__)
 socketio = SocketIO(
     app,
-    async_mode='eventlet',
     cors_allowed_origins="*",
     logger=True,
     engineio_logger=True
