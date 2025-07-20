@@ -115,8 +115,16 @@
             e.preventDefault();
             const name = document.getElementById('usernameInput').value.trim();
             if (!name) return;
-            await fetch('/set_name', { method: 'POST', body: new URLSearchParams({ username: name }) });
-            location.reload(); // now the server will render the chat page
+            try {
+                const response = await fetch('/set_name', { method: 'POST', body: new URLSearchParams({ username: name }) });
+                if (response.ok) {
+                    location.reload();
+                } else {
+                    alert('Failed to set username. Please try again.');
+                }
+            } catch (error) {
+                alert('Connection error. Please check your internet connection.');
+            } // now the server will render the chat page
         });
     </script>
 </body>

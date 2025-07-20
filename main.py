@@ -9,10 +9,25 @@ from flask import Flask, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+# App Configuration Settings
+class Config:
+    SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(24)
+    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
+    CHAT_ROOMS = ['General', 'Introductions', 'off-topics', 'Hobbies and sports']
+    SESSION_TYPE = 'filesystem'
+    SESSION_PERMANENT = False
+
+# Initialize Flask app
 app = Flask(__name__)
+app.config.from_object(Config)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Initialize SocketIO (removed duplicate initialization)
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=app.config['CORS_ORIGINS'],
+    async_mode='threading',  # Added for better Render compatibility
     logger=True,
     engineio_logger=True
 )
@@ -23,26 +38,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# App Configuration Settings
-class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(24)
-    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
-    CHAT_ROOMS = ['General', 'Introductions', 'off-topics', 'Hobbies and sports']
-
-# Initialize Flask app
-app = Flask(__name__)
-app.config.from_object(Config)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-
-# Initialize SocketIO
-socketio = SocketIO(
-    app,
-    cors_allowed_origins=app.config['CORS_ORIGINS'],
-    logger=True,
-    engineio_logger=True
-)
 
 # In-memory user tracking
 active_users: Dict[str, dict] = {}
@@ -80,7 +75,7 @@ def connect():
         emit('active_users', {
             'users': [user['username'] for user in active_users.values()]
         }, broadcast=True)
-        logger.info(f"User connected: {session['username']}")
+        logger.info(f"User connected: {session['username']} (SID: {request.sid})")
     except Exception as e:
         logger.error(f"Connection error: {str(e)}")
         return False
@@ -90,10 +85,17 @@ def disconnect():
     try:
         if request.sid in active_users:
             username = active_users[request.sid]['username']
+            current_room = active_users[request.sid].get('room', 'General')
             del active_users[request.sid]
             emit('active_users', {
                 'users': [user['username'] for user in active_users.values()]
             }, broadcast=True)
+            # Notify room about user leaving
+            emit('status', {
+                'msg': f'{username} has disconnected.',
+                'type': 'disconnect',
+                'timestamp': datetime.now().isoformat()
+            }, room=current_room)
             logger.info(f"User disconnected: {username}")
     except Exception as e:
         logger.error(f"Disconnection error: {str(e)}")
@@ -101,49 +103,88 @@ def disconnect():
 @socketio.on('join')
 def on_join(data: dict):
     try:
-        username = session['username']
-        room = data['room']
-        if room not in app.config['CHAT_ROOMS']:
+        username = session.get('username')
+        if not username:
+            logger.warning("Join attempt without username in session")
+            return
+        
+        room = data.get('room')
+        if not room or room not in app.config['CHAT_ROOMS']:
             logger.warning(f"Invalid room join attempt: {room}")
             return
+        
+        # Leave current room first
+        if request.sid in active_users:
+            current_room = active_users[request.sid].get('room')
+            if current_room and current_room != room:
+                leave_room(current_room)
+                emit('status', {
+                    'msg': f'{username} has left the room.',
+                    'type': 'leave',
+                    'timestamp': datetime.now().isoformat()
+                }, room=current_room)
+        
+        # Join new room
         join_room(room)
         active_users[request.sid]['room'] = room
+        
         emit('status', {
             'msg': f'{username} has joined the room.',
             'type': 'join',
             'timestamp': datetime.now().isoformat()
         }, room=room)
+        
+        # Confirm room join to the user
+        emit('room_joined', {'room': room})
+        
         logger.info(f"User {username} joined room: {room}")
+        
     except Exception as e:
         logger.error(f"Join room error: {str(e)}")
 
 @socketio.on('leave')
 def on_leave(data: dict):
     try:
-        username = session['username']
-        room = data['room']
+        username = session.get('username')
+        if not username:
+            return
+            
+        room = data.get('room')
+        if not room:
+            return
+            
         leave_room(room)
         if request.sid in active_users:
             active_users[request.sid].pop('room', None)
+            
         emit('status', {
             'msg': f'{username} has left the room.',
             'type': 'leave',
             'timestamp': datetime.now().isoformat()
         }, room=room)
+        
         logger.info(f"User {username} left room: {room}")
+        
     except Exception as e:
         logger.error(f"Leave room error: {str(e)}")
 
 @socketio.on('message')
 def handle_message(data: dict):
     try:
-        username = session['username']
+        username = session.get('username')
+        if not username:
+            logger.warning("Message attempt without username in session")
+            return
+            
         room = data.get('room', 'General')
         msg_type = data.get('type', 'message')
         message = data.get('msg', '').strip()
+        
         if not message:
             return
+            
         timestamp = datetime.now().isoformat()
+        
         if msg_type == 'private':
             target_user = data.get('target')
             if not target_user:
@@ -170,28 +211,70 @@ def handle_message(data: dict):
                 'timestamp': timestamp
             }, room=room)
             logger.info(f"Message sent in {room} by {username}")
+            
     except Exception as e:
         logger.error(f"Message handling error: {str(e)}")
 
 @socketio.on('private_chat_request')
 def handle_private_request(data):
-    to_user = data['to']
-    for sid, conn in socketio.server.manager.get_participants('/', None):
-        if conn.get('username') == to_user:
-            emit('private_chat_request', {'from': data['from']}, to=sid)
+    try:
+        to_user = data.get('to')
+        from_user = data.get('from')
+        if not to_user or not from_user:
+            return
+            
+        for sid, user_data in active_users.items():
+            if user_data['username'] == to_user:
+                emit('private_chat_request', {'from': from_user}, room=sid)
+                logger.info(f"Private chat request sent: {from_user} -> {to_user}")
+                return
+        logger.warning(f"Private chat request failed - user not found: {to_user}")
+    except Exception as e:
+        logger.error(f"Private chat request error: {str(e)}")
 
 @socketio.on('private_chat_response')
 def handle_private_response(data):
-    to_user = data['to']
-    for sid, conn in socketio.server.manager.get_participants('/', None):
-        if conn.get('username') == to_user:
-            emit('private_chat_response', {'from': data['from'], 'accepted': data['accepted']}, to=sid)
+    try:
+        to_user = data.get('to')
+        from_user = data.get('from')
+        accepted = data.get('accepted', False)
+        
+        if not to_user or not from_user:
+            return
+            
+        for sid, user_data in active_users.items():
+            if user_data['username'] == to_user:
+                emit('private_chat_response', {
+                    'from': from_user, 
+                    'accepted': accepted
+                }, room=sid)
+                logger.info(f"Private chat response sent: {from_user} -> {to_user} (accepted: {accepted})")
+                return
+        logger.warning(f"Private chat response failed - user not found: {to_user}")
+    except Exception as e:
+        logger.error(f"Private chat response error: {str(e)}")
 
-# make sure every client sends "set_username" after connecting
 @socketio.on('set_username')
-def set_username(username):
-    from flask import request
-    socketio.server.manager.get_participants('/', None)[request.sid]['username'] = username        
+def set_username(data):
+    try:
+        username = data.get('username', '').strip() if isinstance(data, dict) else str(data).strip()
+        if username and request.sid in active_users:
+            old_username = active_users[request.sid]['username']
+            active_users[request.sid]['username'] = username
+            session['username'] = username
+            logger.info(f"Username updated: {old_username} -> {username}")
+            
+            # Update active users list for all clients
+            emit('active_users', {
+                'users': [user['username'] for user in active_users.values()]
+            }, broadcast=True)
+    except Exception as e:
+        logger.error(f"Set username error: {str(e)}")
+
+# Health check endpoint for Render
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
 
 # Run server
 if __name__ == '__main__':
@@ -199,5 +282,6 @@ if __name__ == '__main__':
     socketio.run(
         app,
         host='0.0.0.0',
-        port=port
+        port=port,
+        debug=app.config['DEBUG']
     )
