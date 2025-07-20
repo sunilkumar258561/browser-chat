@@ -405,3 +405,34 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+// Send heartbeat every 30 seconds to refresh user lists
+setInterval(() => {
+    if (socket.connected) {
+        socket.emit('heartbeat');
+    }
+}, 30000);
+
+// Request fresh user lists on connection
+socket.on('connect', () => {
+    console.log('Connected to server');
+    socket.emit('get_active_users');
+    socket.emit('get_room_users', {room: currentRoom});
+});
+
+// Handle connection confirmation
+socket.on('connection_confirmed', (data) => {
+    console.log('Connection confirmed:', data);
+});
+
+// Add refresh button functionality
+function refreshUserLists() {
+    socket.emit('refresh_users');
+}
+
+// Enhanced user list handler
+socket.on('active_users', (data) => {
+    console.log('Received active users:', data);
+    updateActiveUsersList(data.users);
+    // Update user count display if you have one
+    updateUserCount(data.count);
+});
