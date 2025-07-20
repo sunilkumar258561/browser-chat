@@ -567,7 +567,8 @@
     </div>
 
     <script>
-        let socket = io();
+        const socket = io('/', { transports: ['websocket'] });
+
         let currentRoom = 'General';
         let username = document.getElementById('username').textContent;
         let roomMessages = {};
