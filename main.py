@@ -23,11 +23,11 @@ app = Flask(__name__)
 app.config.from_object(Config)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Initialize SocketIO (removed duplicate initialization)
+# Initialize SocketIO
 socketio = SocketIO(
     app,
     cors_allowed_origins=app.config['CORS_ORIGINS'],
-    async_mode='threading',  # Added for better Render compatibility
+    async_mode='threading',
     logger=True,
     engineio_logger=True
 )
@@ -45,6 +45,15 @@ active_users: Dict[str, dict] = {}
 def generate_guest_username() -> str:
     timestamp = datetime.now().strftime('%H%M')
     return f'user{timestamp}{random.randint(1000,9999)}'
+
+def get_users_in_room(room):
+    """Get list of users in a specific room"""
+    return [user for user in active_users.values() if user.get('room') == room]
+
+def get_all_active_users():
+    """Get all active users with their details"""
+    return [{'username': user['username'], 'room': user.get('room', 'General')} 
+            for user in active_users.values()]
 
 @app.route('/')
 def index():
@@ -66,16 +75,42 @@ def connect():
     try:
         if 'username' not in session:
             session['username'] = generate_guest_username()
+        
+        # Add user to active users
         active_users[request.sid] = {
             'username': session['username'],
             'connected_at': datetime.now().isoformat(),
             'room': 'General'
         }
+        
+        # Join default room
         join_room('General')
+        
+        # Send current user list to the newly connected user
         emit('active_users', {
-            'users': [user['username'] for user in active_users.values()]
+            'users': get_all_active_users()
+        })
+        
+        # Send users in current room to the newly connected user
+        emit('room_users', {
+            'room': 'General',
+            'users': [user['username'] for user in get_users_in_room('General')]
+        })
+        
+        # Broadcast updated user list to all users
+        emit('active_users', {
+            'users': get_all_active_users()
         }, broadcast=True)
+        
+        # Broadcast user joined status to the room
+        emit('status', {
+            'msg': f'{session["username"]} has joined the room.',
+            'type': 'join',
+            'timestamp': datetime.now().isoformat()
+        }, room='General')
+        
         logger.info(f"User connected: {session['username']} (SID: {request.sid})")
+        
     except Exception as e:
         logger.error(f"Connection error: {str(e)}")
         return False
@@ -86,17 +121,30 @@ def disconnect():
         if request.sid in active_users:
             username = active_users[request.sid]['username']
             current_room = active_users[request.sid].get('room', 'General')
+            
+            # Remove user from active users
             del active_users[request.sid]
+            
+            # Broadcast updated user list to all users
             emit('active_users', {
-                'users': [user['username'] for user in active_users.values()]
+                'users': get_all_active_users()
             }, broadcast=True)
+            
+            # Broadcast updated room users list
+            emit('room_users', {
+                'room': current_room,
+                'users': [user['username'] for user in get_users_in_room(current_room)]
+            }, room=current_room)
+            
             # Notify room about user leaving
             emit('status', {
                 'msg': f'{username} has disconnected.',
                 'type': 'disconnect',
                 'timestamp': datetime.now().isoformat()
             }, room=current_room)
+            
             logger.info(f"User disconnected: {username}")
+            
     except Exception as e:
         logger.error(f"Disconnection error: {str(e)}")
 
@@ -118,20 +166,42 @@ def on_join(data: dict):
             current_room = active_users[request.sid].get('room')
             if current_room and current_room != room:
                 leave_room(current_room)
+                
+                # Notify old room about user leaving
                 emit('status', {
                     'msg': f'{username} has left the room.',
                     'type': 'leave',
                     'timestamp': datetime.now().isoformat()
+                }, room=current_room)
+                
+                # Update old room's user list
+                emit('room_users', {
+                    'room': current_room,
+                    'users': [user['username'] for user in get_users_in_room(current_room)]
                 }, room=current_room)
         
         # Join new room
         join_room(room)
         active_users[request.sid]['room'] = room
         
+        # Send room users list to the joining user
+        room_users = get_users_in_room(room)
+        emit('room_users', {
+            'room': room,
+            'users': [user['username'] for user in room_users]
+        })
+        
+        # Notify new room about user joining
         emit('status', {
             'msg': f'{username} has joined the room.',
             'type': 'join',
             'timestamp': datetime.now().isoformat()
+        }, room=room)
+        
+        # Update new room's user list for everyone in the room
+        emit('room_users', {
+            'room': room,
+            'users': [user['username'] for user in get_users_in_room(room)]
         }, room=room)
         
         # Confirm room join to the user
@@ -155,12 +225,20 @@ def on_leave(data: dict):
             
         leave_room(room)
         if request.sid in active_users:
-            active_users[request.sid].pop('room', None)
+            active_users[request.sid]['room'] = 'General'  # Default back to General
+            join_room('General')
             
+        # Notify room about user leaving
         emit('status', {
             'msg': f'{username} has left the room.',
             'type': 'leave',
             'timestamp': datetime.now().isoformat()
+        }, room=room)
+        
+        # Update room's user list
+        emit('room_users', {
+            'room': room,
+            'users': [user['username'] for user in get_users_in_room(room)]
         }, room=room)
         
         logger.info(f"User {username} left room: {room}")
@@ -189,28 +267,51 @@ def handle_message(data: dict):
             target_user = data.get('target')
             if not target_user:
                 return
+                
+            # Find target user's socket ID
+            target_sid = None
             for sid, user_data in active_users.items():
                 if user_data['username'] == target_user:
-                    emit('private_message', {
-                        'msg': message,
-                        'from': username,
-                        'to': target_user,
-                        'timestamp': timestamp
-                    }, room=sid)
-                    logger.info(f"Private message sent: {username} -> {target_user}")
-                    return
-            logger.warning(f"Private message failed - user not found: {target_user}")
+                    target_sid = sid
+                    break
+            
+            if target_sid:
+                # Send to target user
+                emit('private_message', {
+                    'msg': message,
+                    'from': username,
+                    'to': target_user,
+                    'timestamp': timestamp
+                }, room=target_sid)
+                
+                # Send confirmation to sender
+                emit('private_message', {
+                    'msg': message,
+                    'from': username,
+                    'to': target_user,
+                    'timestamp': timestamp,
+                    'sent_by_me': True
+                })
+                
+                logger.info(f"Private message sent: {username} -> {target_user}")
+            else:
+                logger.warning(f"Private message failed - user not found: {target_user}")
+                emit('error', {'msg': f'User {target_user} not found'})
         else:
+            # Public room message
             if room not in app.config['CHAT_ROOMS']:
                 logger.warning(f"Message to invalid room: {room}")
                 return
+                
+            # Broadcast message to all users in the room
             emit('message', {
                 'msg': message,
                 'username': username,
                 'room': room,
                 'timestamp': timestamp
             }, room=room)
-            logger.info(f"Message sent in {room} by {username}")
+            
+            logger.info(f"Message sent in {room} by {username}: {message[:50]}...")
             
     except Exception as e:
         logger.error(f"Message handling error: {str(e)}")
@@ -223,12 +324,20 @@ def handle_private_request(data):
         if not to_user or not from_user:
             return
             
+        # Find target user's socket ID
+        target_sid = None
         for sid, user_data in active_users.items():
             if user_data['username'] == to_user:
-                emit('private_chat_request', {'from': from_user}, room=sid)
-                logger.info(f"Private chat request sent: {from_user} -> {to_user}")
-                return
-        logger.warning(f"Private chat request failed - user not found: {to_user}")
+                target_sid = sid
+                break
+        
+        if target_sid:
+            emit('private_chat_request', {'from': from_user}, room=target_sid)
+            logger.info(f"Private chat request sent: {from_user} -> {to_user}")
+        else:
+            logger.warning(f"Private chat request failed - user not found: {to_user}")
+            emit('error', {'msg': f'User {to_user} not found'})
+            
     except Exception as e:
         logger.error(f"Private chat request error: {str(e)}")
 
@@ -241,16 +350,23 @@ def handle_private_response(data):
         
         if not to_user or not from_user:
             return
-            
+        
+        # Find target user's socket ID
+        target_sid = None
         for sid, user_data in active_users.items():
             if user_data['username'] == to_user:
-                emit('private_chat_response', {
-                    'from': from_user, 
-                    'accepted': accepted
-                }, room=sid)
-                logger.info(f"Private chat response sent: {from_user} -> {to_user} (accepted: {accepted})")
-                return
-        logger.warning(f"Private chat response failed - user not found: {to_user}")
+                target_sid = sid
+                break
+        
+        if target_sid:
+            emit('private_chat_response', {
+                'from': from_user, 
+                'accepted': accepted
+            }, room=target_sid)
+            logger.info(f"Private chat response sent: {from_user} -> {to_user} (accepted: {accepted})")
+        else:
+            logger.warning(f"Private chat response failed - user not found: {to_user}")
+            
     except Exception as e:
         logger.error(f"Private chat response error: {str(e)}")
 
@@ -262,14 +378,53 @@ def set_username(data):
             old_username = active_users[request.sid]['username']
             active_users[request.sid]['username'] = username
             session['username'] = username
-            logger.info(f"Username updated: {old_username} -> {username}")
+            
+            current_room = active_users[request.sid].get('room', 'General')
+            
+            # Broadcast username change to current room
+            emit('status', {
+                'msg': f'{old_username} is now known as {username}.',
+                'type': 'username_change',
+                'timestamp': datetime.now().isoformat()
+            }, room=current_room)
             
             # Update active users list for all clients
             emit('active_users', {
-                'users': [user['username'] for user in active_users.values()]
+                'users': get_all_active_users()
             }, broadcast=True)
+            
+            # Update room users list
+            emit('room_users', {
+                'room': current_room,
+                'users': [user['username'] for user in get_users_in_room(current_room)]
+            }, room=current_room)
+            
+            logger.info(f"Username updated: {old_username} -> {username}")
+            
     except Exception as e:
         logger.error(f"Set username error: {str(e)}")
+
+@socketio.on('get_room_users')
+def get_room_users(data):
+    try:
+        room = data.get('room')
+        if room and room in app.config['CHAT_ROOMS']:
+            room_users = get_users_in_room(room)
+            emit('room_users', {
+                'room': room,
+                'users': [user['username'] for user in room_users]
+            })
+    except Exception as e:
+        logger.error(f"Get room users error: {str(e)}")
+
+@socketio.on('get_active_users')
+def get_active_users():
+    try:
+        emit('active_users', {
+            'users': get_all_active_users()
+        })
+    except Exception as e:
+        logger.error(f"Get active users error: {str(e)}")
 
 # Health check endpoint for Render
 @app.route('/health')
