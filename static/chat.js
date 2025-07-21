@@ -5,8 +5,17 @@ let roomMessages = {};
 
 /* ----------  SOCKET LISTENERS  ---------- */
 socket.on('connect', () => {
+    console.log('Connected to server');
     joinRoom('General');
     highlightActiveRoom('General');
+});
+
+socket.on('disconnect', () => {
+    console.log('Disconnected from server');
+});
+
+socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
 });
 
 socket.on('message', (data) => {
@@ -38,6 +47,7 @@ socket.on('active_users', (data) => {
 function avatarURL(sender) {
     return `https://i.pravatar.cc/32?u=${encodeURIComponent(sender)}`;
 }
+
 function formatTimestamp() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -118,51 +128,20 @@ function highlightActiveRoom(room) {
 /* ----------  INIT  ---------- */
 document.addEventListener('DOMContentLoaded', () => {
     if ('Notification' in window) Notification.requestPermission();
+    
+    // Set username on connect
+    socket.emit('set_username', username);
 });
+
 function searchUsers() {
-    const input = document.getElementById('userSearch').value.toLowerCase();
+    const input = document.getElementById('userSearch');
+    if (!input) return;
+    
+    const searchTerm = input.value.toLowerCase();
     const users = document.querySelectorAll('#active-users .user-item');
+    
     users.forEach(user => {
-        const username = user.querySelector('.user-name').textContent.toLowerCase();
-        user.style.display = username.includes(input) ? 'flex' : 'none';
+        const username = user.textContent.toLowerCase();
+        user.style.display = username.includes(searchTerm) ? 'flex' : 'none';
     });
 }
-// server.js  (or index.js)
-const { Server } = require('socket.io');
-const http = require('http');
-const express = require('express');
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
-
-io.on('connection', socket => {
-  // store username on connect (you probably already do this)
-  socket.on('join', ({ room }) => {
-    socket.join(room);
-  });
-
-  /*  ➜  NEW HANDLERS  */
-  socket.on('private_chat_request', ({ from, to }) => {
-    // find socket whose stored username === "to"
-    const target = [...io.sockets.sockets.values()].find(
-      s => s.username === to
-    );
-    if (target) target.emit('private_chat_request', { from });
-  });
-
-  socket.on('private_chat_response', ({ from, to, accepted }) => {
-    const target = [...io.sockets.sockets.values()].find(
-      s => s.username === to
-    );
-    if (target) target.emit('private_chat_response', { from, accepted });
-  });
-
-  // store username when client sends it (do this once on connect)
-  socket.on('set_username', username => {
-    socket.username = username;
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('Listening on', PORT));
