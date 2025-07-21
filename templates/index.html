@@ -567,7 +567,10 @@
     </div>
 
     <script>
-        let socket = io();
+        const socket = io("https://browser-chat-2.onrender.com", {
+    transports: ["websocket"],
+});
+
         let currentRoom = 'General';
         let username = document.getElementById('username').textContent;
         let roomMessages = {};

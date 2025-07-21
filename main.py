@@ -3,11 +3,11 @@ import random
 import logging
 from datetime import datetime
 from typing import Dict
-
+import eventlet
 from flask import Flask, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.middleware.proxy_fix import ProxyFix
-
+eventlet.monkey_patch()
 # Config logging
 logging.basicConfig(
     level=logging.INFO,
@@ -24,8 +24,7 @@ class Config:
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config.from_object(Config)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Initialize SocketIO with proper configuration for production
 socketio = SocketIO(
